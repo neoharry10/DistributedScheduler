@@ -1,3 +1,4 @@
+using System.Text.Json;
 using DistributedScheduler.Domain;
 using Npgsql;
 
@@ -41,4 +42,22 @@ public class PoisonJob : IJobHandler
 {
     public string Type => nameof(PoisonJob);
     public Task HandleAsync(Job job, CancellationToken ct) => throw new InvalidOperationException("Always fails");
+}
+
+public class SlowJob(NpgsqlDataSource db) : IJobHandler
+{
+    public string Type => nameof(SlowJob);
+
+    public async Task HandleAsync(Job job, CancellationToken ct)
+    {
+        var seconds = 10;
+        if (job.Payload is not null)
+        {
+            using var doc = JsonDocument.Parse(job.Payload);
+            if (doc.RootElement.TryGetProperty("seconds", out var s)) seconds = s.GetInt32();
+        }
+
+        await Task.Delay(TimeSpan.FromSeconds(seconds), ct);   // cancelled on shutdown or lost lease
+        await Effects.RecordAsync(db, job, Type, ct);          // only reached if the job really finished
+    }
 }

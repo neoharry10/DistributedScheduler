@@ -16,9 +16,15 @@ public static class JobWorkerExtensions
         services.AddScoped<IJobHandler, SendEmailJob>();
         services.AddScoped<IJobHandler, FlakyJob>();
         services.AddScoped<IJobHandler, PoisonJob>();
+        services.AddScoped<IJobHandler, SlowJob>();
 
-        services.Configure<WorkerOptions>(o => configure?.Invoke(o));
+        services.AddOptions<WorkerOptions>()
+            .Configure(o => configure?.Invoke(o))
+            .Validate(o => o.HeartbeatInterval * 3 <= o.Lease, "HeartbeatInterval must be at most Lease / 3")
+            .ValidateOnStart();
+
         services.AddHostedService<JobWorker>();
+        services.AddHostedService<LeaseReaper>();
         return services;
     }
 }

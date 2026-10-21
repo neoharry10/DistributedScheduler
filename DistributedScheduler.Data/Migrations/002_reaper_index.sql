@@ -1,0 +1,1 @@
+CREATE INDEX ix_jobs_running ON jobs (locked_until) WHERE status = 1;

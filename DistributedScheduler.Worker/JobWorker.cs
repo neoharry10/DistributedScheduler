@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using DistributedScheduler.Domain;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,6 +16,8 @@ public class JobWorker(
 {
     private readonly WorkerOptions _o = options.Value;
     private readonly string _workerId = $"{Environment.MachineName}-{Environment.ProcessId}";
+    private readonly ConcurrentDictionary<Guid, RunningJob> _running = new();
+    private volatile bool _drainExpired;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -25,22 +28,30 @@ public class JobWorker(
             .Select(_ => Task.Run(() => ConsumeAsync(channel.Reader, slots)))
             .ToArray();
 
+        // Its own token on purpose: jobs keep running while we drain after stoppingToken fires,
+        // so their leases must keep being extended until the very end.
+        using var heartbeatCts = new CancellationTokenSource();
+        var heartbeat = Task.Run(() => HeartbeatAsync(heartbeatCts.Token));
+
         try
         {
             await PollAsync(channel.Writer, slots, stoppingToken);
         }
         finally
         {
-            channel.Writer.Complete();          // consumers drain what's left, then exit
-            await Task.WhenAll(consumers);      // in-flight jobs finish before we return
+            channel.Writer.Complete();
+            await DrainAsync(Task.WhenAll(consumers));
+            heartbeatCts.Cancel();
+            await heartbeat;
         }
     }
+
+    // ---------- claiming (same as M2) ----------
 
     private async Task PollAsync(ChannelWriter<Job> writer, SemaphoreSlim slots, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            // Grab as many free slots as we can (up to BatchSize), blocking for at least one.
             var taken = 0;
             try
             {
@@ -58,9 +69,8 @@ public class JobWorker(
             catch (OperationCanceledException) { /* shutting down */ }
             catch (Exception ex) { log.LogError(ex, "Claim failed, backing off"); }
 
-            if (taken > jobs.Count) slots.Release(taken - jobs.Count);   // return unused slots
+            if (taken > jobs.Count) slots.Release(taken - jobs.Count);
 
-            // Never blocks: channel capacity == total slots.
             foreach (var job in jobs) await writer.WriteAsync(job, CancellationToken.None);
 
             if (jobs.Count == 0)
@@ -81,8 +91,15 @@ public class JobWorker(
         }
     }
 
+    // ---------- running one job ----------
+
     private async Task RunAsync(Job job)
     {
+        var rj = new RunningJob();
+        _running[job.Id] = rj;
+        if (_drainExpired) rj.Cancel(CancelReason.Shutdown);   // started after the drain timeout already hit
+
+        Exception? error = null;
         try
         {
             await using var scope = scopes.CreateAsyncScope();
@@ -90,19 +107,115 @@ public class JobWorker(
                               .FirstOrDefault(h => h.Type == job.Type)
                           ?? throw new InvalidOperationException($"No handler for job type '{job.Type}'");
 
-            // M2: jobs run to completion even on shutdown. M3 adds cancellation + drain timeout.
-            await handler.HandleAsync(job, CancellationToken.None);
+            await handler.HandleAsync(job, rj.Token);
         }
-        catch (Exception ex)
+        catch (Exception ex) { error = ex; }
+        finally
         {
-            var delay = Backoff.Delay(job.Attempts, _o.RetryBase, _o.RetryCap, Random.Shared.NextDouble());
-            var recorded = await repo.FailAsync(job.Id, _workerId, ex.ToString(), delay);
-            log.LogWarning("Job {JobId} ({Type}) failed on attempt {Attempt}/{Max}, recorded={Recorded}: {Message}",
-                job.Id, job.Type, job.Attempts, job.MaxAttempts, recorded, ex.Message);
+            // Deregister BEFORE touching the DB. The heartbeat only cancels jobs that are still registered,
+            // so it can never cancel a job that already finished.
+            _running.TryRemove(job.Id, out _);
+            rj.Dispose();
+        }
+
+        if (error is null)
+        {
+            if (!await repo.CompleteAsync(job.Id, _workerId))
+                log.LogWarning("Job {JobId} finished but we no longer hold the lease", job.Id);
             return;
         }
 
-        if (!await repo.CompleteAsync(job.Id, _workerId))
-            log.LogWarning("Job {JobId} finished but we no longer hold the lease", job.Id);
+        switch (rj.Reason)
+        {
+            case CancelReason.Shutdown:
+                var released = await repo.ReleaseAsync(job.Id, _workerId);
+                log.LogInformation("Job {JobId} interrupted by shutdown, released={Released}", job.Id, released);
+                break;
+
+            case CancelReason.LeaseLost:
+                // Someone else owns it now. Writing a result here would be wrong (and the guarded SQL would refuse anyway).
+                log.LogWarning("Job {JobId} cancelled because its lease was lost", job.Id);
+                break;
+
+            default:
+                var delay = Backoff.Delay(job.Attempts, _o.RetryBase, _o.RetryCap, Random.Shared.NextDouble());
+                var recorded = await repo.FailAsync(job.Id, _workerId, error.ToString(), delay);
+                log.LogWarning("Job {JobId} ({Type}) failed on attempt {Attempt}/{Max}, recorded={Recorded}: {Message}",
+                    job.Id, job.Type, job.Attempts, job.MaxAttempts, recorded, error.Message);
+                break;
+        }
     }
+
+    // ---------- heartbeat ----------
+
+    private async Task HeartbeatAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(_o.HeartbeatInterval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                try { await BeatAsync(ct); }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    log.LogError(ex, "Heartbeat failed, will retry next tick");
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* worker is done */ }
+    }
+
+    private async Task BeatAsync(CancellationToken ct)
+    {
+        // Snapshot BEFORE the query: everything in it was already claimed, so if the DB says we
+        // don't hold it anymore, the lease is genuinely lost (not just "claimed a moment ago").
+        var snapshot = _running.Keys.ToArray();
+        var held = (await repo.ExtendLeasesAsync(_workerId, _o.Lease, ct)).ToHashSet();
+
+        foreach (var id in snapshot)
+        {
+            if (!held.Contains(id) && _running.TryGetValue(id, out var rj))
+            {
+                log.LogWarning("Lease lost for job {JobId}, cancelling it", id);
+                rj.Cancel(CancelReason.LeaseLost);
+            }
+        }
+    }
+
+    // ---------- graceful shutdown ----------
+
+    private async Task DrainAsync(Task consumers)
+    {
+        log.LogInformation("Draining: waiting up to {Timeout} for {Count} running job(s)", _o.DrainTimeout, _running.Count);
+        try
+        {
+            await consumers.WaitAsync(_o.DrainTimeout);
+        }
+        catch (TimeoutException)
+        {
+            log.LogWarning("Drain timeout: cancelling {Count} running job(s)", _running.Count);
+            _drainExpired = true;   // set the flag first so a job that starts right now cancels itself
+            foreach (var rj in _running.Values) rj.Cancel(CancelReason.Shutdown);
+            await consumers;
+        }
+    }
+}
+
+internal enum CancelReason { None = 0, LeaseLost = 1, Shutdown = 2 }
+
+internal sealed class RunningJob : IDisposable
+{
+    private readonly CancellationTokenSource _cts = new();
+    private int _reason;
+
+    public CancellationToken Token => _cts.Token;
+    public CancelReason Reason => (CancelReason)Volatile.Read(ref _reason);
+
+    public void Cancel(CancelReason reason)
+    {
+        if (Interlocked.CompareExchange(ref _reason, (int)reason, 0) != 0) return;   // first reason wins
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
+    public void Dispose() => _cts.Dispose();
 }

@@ -113,4 +113,60 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         cmd.Parameters.AddWithValue("delay_seconds", retryDelay.TotalSeconds);
         return await cmd.ExecuteNonQueryAsync(ct) == 1;
     }
+
+    public async Task<IReadOnlyList<Guid>> ExtendLeasesAsync(string workerId, TimeSpan lease, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE jobs
+            SET locked_until = now() + make_interval(secs => @lease_seconds)
+            WHERE status = 1 AND locked_by = @worker
+            RETURNING id;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("worker", workerId);
+        cmd.Parameters.AddWithValue("lease_seconds", lease.TotalSeconds);
+
+        var ids = new List<Guid>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) ids.Add(r.GetGuid(0));
+        return ids;
+    }
+
+    public async Task<bool> ReleaseAsync(Guid id, string workerId, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE jobs
+            SET status = 0,
+                attempts = GREATEST(attempts - 1, 0),
+                run_at = now(),
+                locked_by = NULL,
+                locked_until = NULL
+            WHERE id = @id AND status = 1 AND locked_by = @worker;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("id", id);
+        cmd.Parameters.AddWithValue("worker", workerId);
+        return await cmd.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    public async Task<int> ReapExpiredAsync(CancellationToken ct = default)
+    {
+        // A crash already used up an attempt (counted at claim time).
+        // Out of attempts -> Dead, so a job that keeps killing workers eventually gets parked.
+        // Several reapers can run at once: the loser blocks on the row lock, re-checks the WHERE, matches nothing.
+        const string sql = """
+            UPDATE jobs
+            SET status = CASE WHEN attempts >= max_attempts THEN 4 ELSE 0 END,
+                run_at = now(),
+                last_error = 'Lease expired: worker crashed or stalled (held by ' || coalesce(locked_by, '?') || ')',
+                locked_by = NULL,
+                locked_until = NULL
+            WHERE status = 1 AND locked_until < now();
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
 }
