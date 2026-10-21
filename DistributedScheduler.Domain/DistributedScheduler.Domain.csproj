@@ -6,4 +6,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Cronos" Version="0.13.0" />
+  </ItemGroup>
+
 </Project>

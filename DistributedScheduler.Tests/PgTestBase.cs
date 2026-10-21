@@ -2,6 +2,8 @@ using DistributedScheduler.Data;
 using DistributedScheduler.Domain;
 using Npgsql;
 using Testcontainers.PostgreSql;
+using DistributedScheduler.Worker;
+using Microsoft.Extensions.Hosting;
 
 namespace DistributedScheduler.Tests;
 
@@ -66,5 +68,24 @@ public abstract class PgTestBase : IAsyncLifetime
             await Task.Delay(200);
         }
         throw new TimeoutException($"Timed out waiting for: {what}{Environment.NewLine}{diagnostics?.Invoke()}");
+    }
+
+    protected async Task ExecAsync(string sql)
+    {
+        await using var cmd = Db.CreateCommand(sql);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    protected async Task<long> CountAsync(string sql)
+    {
+        await using var cmd = Db.CreateCommand(sql);
+        return (long)(await cmd.ExecuteScalarAsync())!;
+    }
+
+    protected IHost BuildHost(Action<WorkerOptions> configure)
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddJobWorker(Pg.GetConnectionString(), configure);
+        return builder.Build();
     }
 }

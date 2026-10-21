@@ -17,6 +17,7 @@ public static class JobWorkerExtensions
         services.AddScoped<IJobHandler, FlakyJob>();
         services.AddScoped<IJobHandler, PoisonJob>();
         services.AddScoped<IJobHandler, SlowJob>();
+        services.AddScoped<IJobHandler, TickJob>();
 
         services.AddOptions<WorkerOptions>()
             .Configure(o => configure?.Invoke(o))
@@ -25,6 +26,7 @@ public static class JobWorkerExtensions
 
         services.AddHostedService<JobWorker>();
         services.AddHostedService<LeaseReaper>();
+        services.AddHostedService<RecurringScheduler>();
         return services;
     }
 }

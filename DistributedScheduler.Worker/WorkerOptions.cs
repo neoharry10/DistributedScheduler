@@ -13,4 +13,6 @@ public class WorkerOptions
     public TimeSpan HeartbeatInterval { get; set; } = TimeSpan.FromSeconds(10);   // rule: <= Lease / 3
     public TimeSpan ReaperInterval { get; set; } = TimeSpan.FromSeconds(10);
     public TimeSpan DrainTimeout { get; set; } = TimeSpan.FromSeconds(25);        // must be < host ShutdownTimeout
+
+    public TimeSpan SchedulerInterval { get; set; } = TimeSpan.FromSeconds(1);
 }

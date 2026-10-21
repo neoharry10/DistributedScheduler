@@ -18,4 +18,6 @@ public class Job
     public string? LastError { get; set; }
     public string? IdempotencyKey { get; set; }
     public DateTime CreatedAt { get; set; }
+    public string? RecurringId { get; set; }
+    public DateTime? ScheduledFor { get; set; }
 }

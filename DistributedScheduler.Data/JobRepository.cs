@@ -42,8 +42,8 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
                 LIMIT @batch
                 FOR UPDATE SKIP LOCKED)
             RETURNING id, type, payload::text, queue, status, priority, run_at,
-                      attempts, max_attempts, locked_by, locked_until, last_error,
-                      idempotency_key, created_at;
+                attempts, max_attempts, locked_by, locked_until, last_error,
+                idempotency_key, created_at, recurring_id, scheduled_for;
             """;
 
         await using var cmd = db.CreateCommand(sql);
@@ -75,6 +75,8 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         LastError      = r.IsDBNull(11) ? null : r.GetString(11),
         IdempotencyKey = r.IsDBNull(12) ? null : r.GetString(12),
         CreatedAt      = r.GetDateTime(13),
+        RecurringId    = r.IsDBNull(14) ? null : r.GetString(14),
+        ScheduledFor   = r.IsDBNull(15) ? null : r.GetDateTime(15),
     };
 
     public async Task<bool> CompleteAsync(Guid id, string workerId, CancellationToken ct = default)
@@ -168,5 +170,109 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
 
         await using var cmd = db.CreateCommand(sql);
         return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task UpsertRecurringAsync(RecurringJob job, CancellationToken ct = default)
+    {
+        // A bad cron fails here, at registration, not at 3am.
+        var next = CronSchedule.NextAfter(job.Cron, job.TimeZone, DateTime.UtcNow)
+            ?? throw new ArgumentException($"Cron '{job.Cron}' never fires", nameof(job));
+
+        // next_run_at only resets when the schedule itself changed, so re-registering on every
+        // startup doesn't push the next tick back. (SET expressions all see the OLD row.)
+        const string sql = """
+            INSERT INTO recurring_jobs (id, type, payload, queue, cron, time_zone, enabled, next_run_at)
+            VALUES (@id, @type, @payload::jsonb, @queue, @cron, @time_zone, @enabled, @next_run_at)
+            ON CONFLICT (id) DO UPDATE SET
+                type = EXCLUDED.type,
+                payload = EXCLUDED.payload,
+                queue = EXCLUDED.queue,
+                enabled = EXCLUDED.enabled,
+                next_run_at = CASE WHEN recurring_jobs.cron IS DISTINCT FROM EXCLUDED.cron
+                                    OR recurring_jobs.time_zone IS DISTINCT FROM EXCLUDED.time_zone
+                                THEN EXCLUDED.next_run_at
+                                ELSE recurring_jobs.next_run_at END,
+                cron = EXCLUDED.cron,
+                time_zone = EXCLUDED.time_zone;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("id", job.Id);
+        cmd.Parameters.AddWithValue("type", job.Type);
+        cmd.Parameters.AddWithValue("payload", (object?)job.Payload ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("queue", job.Queue);
+        cmd.Parameters.AddWithValue("cron", job.Cron);
+        cmd.Parameters.AddWithValue("time_zone", job.TimeZone);
+        cmd.Parameters.AddWithValue("enabled", job.Enabled);
+        cmd.Parameters.AddWithValue("next_run_at", next);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    public async Task<int> EnqueueDueRecurringAsync(int batchSize = 50, CancellationToken ct = default)
+    {
+        await using var conn = await db.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        // Lock the due rows. Other nodes skip whatever we hold. now() is the DB clock, so no app/DB skew.
+        const string selectSql = """
+            SELECT id, type, payload::text, queue, cron, time_zone, next_run_at, now()
+            FROM recurring_jobs
+            WHERE enabled AND next_run_at <= now()
+            ORDER BY next_run_at
+            LIMIT @batch
+            FOR UPDATE SKIP LOCKED;
+            """;
+
+        var due = new List<(RecurringJob Job, DateTime DbNow)>();
+        await using (var cmd = new NpgsqlCommand(selectSql, conn, tx))
+        {
+            cmd.Parameters.AddWithValue("batch", batchSize);
+            await using var r = await cmd.ExecuteReaderAsync(ct);
+            while (await r.ReadAsync(ct))
+                due.Add((new RecurringJob
+                {
+                    Id = r.GetString(0),
+                    Type = r.GetString(1),
+                    Payload = r.IsDBNull(2) ? null : r.GetString(2),
+                    Queue = r.GetString(3),
+                    Cron = r.GetString(4),
+                    TimeZone = r.GetString(5),
+                    NextRunAt = r.GetDateTime(6)
+                }, r.GetDateTime(7)));
+        }   // reader closed before we reuse the connection
+
+        var enqueued = 0;
+        foreach (var (rj, now) in due)
+        {
+            // Missed slots are skipped on purpose: after downtime you get ONE catch-up run, not 60.
+            var next = CronSchedule.NextAfter(rj.Cron, rj.TimeZone, now);
+
+            await using (var ins = new NpgsqlCommand("""
+                INSERT INTO jobs (id, type, payload, queue, run_at, recurring_id, scheduled_for)
+                VALUES (@id, @type, @payload::jsonb, @queue, @slot, @rid, @slot)
+                ON CONFLICT (recurring_id, scheduled_for) DO NOTHING;
+                """, conn, tx))
+            {
+                ins.Parameters.AddWithValue("id", Guid.NewGuid());
+                ins.Parameters.AddWithValue("type", rj.Type);
+                ins.Parameters.AddWithValue("payload", (object?)rj.Payload ?? DBNull.Value);
+                ins.Parameters.AddWithValue("queue", rj.Queue);
+                ins.Parameters.AddWithValue("slot", rj.NextRunAt);
+                ins.Parameters.AddWithValue("rid", rj.Id);
+                enqueued += await ins.ExecuteNonQueryAsync(ct);
+            }
+
+            await using (var upd = new NpgsqlCommand(
+                "UPDATE recurring_jobs SET next_run_at = @next, enabled = @enabled WHERE id = @id;", conn, tx))
+            {
+                upd.Parameters.AddWithValue("next", next ?? rj.NextRunAt);
+                upd.Parameters.AddWithValue("enabled", next is not null);   // never fires again -> disable
+                upd.Parameters.AddWithValue("id", rj.Id);
+                await upd.ExecuteNonQueryAsync(ct);
+            }
+        }
+
+        await tx.CommitAsync(ct);
+        return enqueued;
     }
 }

@@ -82,10 +82,4 @@ public class RecoveryTests : PgTestBase
         Assert.Equal(0, await EffectsAsync(id));
     }
 
-    private IHost BuildHost(Action<WorkerOptions> configure)
-    {
-        var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddJobWorker(Pg.GetConnectionString(), configure);
-        return builder.Build();
-    }
 }

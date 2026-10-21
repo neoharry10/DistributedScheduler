@@ -61,3 +61,9 @@ public class SlowJob(NpgsqlDataSource db) : IJobHandler
         await Effects.RecordAsync(db, job, Type, ct);          // only reached if the job really finished
     }
 }
+
+public class TickJob(NpgsqlDataSource db) : IJobHandler
+{
+    public string Type => nameof(TickJob);
+    public Task HandleAsync(Job job, CancellationToken ct) => Effects.RecordAsync(db, job, Type, ct);
+}
