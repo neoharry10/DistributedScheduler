@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-DistributedScheduler.Worker-3ec9db18-9f9e-41a1-8a2b-dfa1fa4e9f49</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.13" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DistributedScheduler.Domain\DistributedScheduler.Domain.csproj" />
+    <ProjectReference Include="..\DistributedScheduler.Data\DistributedScheduler.Data.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: scheduler-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: scheduler
+      POSTGRES_PASSWORD: scheduler
+      POSTGRES_DB: scheduler
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scheduler -d scheduler"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

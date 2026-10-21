@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "oSYsDZHd2/w=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\NeocharisMichailidis\\projects\\tests\\DistributedSchedulerTest\\DistributedScheduler.Web\\DistributedScheduler.Web.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\NeocharisMichailidis\\.nuget\\packages\\microsoft.aspnetcore.app.internal.assets\\10.0.13\\microsoft.aspnetcore.app.internal.assets.10.0.13.nupkg.sha512"
+  ],
+  "logs": []
+}

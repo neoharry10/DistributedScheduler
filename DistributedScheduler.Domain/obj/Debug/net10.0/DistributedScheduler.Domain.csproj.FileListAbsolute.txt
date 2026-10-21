@@ -1,0 +1,11 @@
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\bin\Debug\net10.0\DistributedScheduler.Domain.deps.json
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\bin\Debug\net10.0\DistributedScheduler.Domain.dll
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\bin\Debug\net10.0\DistributedScheduler.Domain.pdb
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\DistributedScheduler.Domain.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\DistributedScheduler.Domain.AssemblyInfoInputs.cache
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\DistributedScheduler.Domain.AssemblyInfo.cs
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\DistributedScheduler.Domain.csproj.CoreCompileInputs.cache
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\DistributedScheduler.Domain.dll
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\refint\DistributedScheduler.Domain.dll
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\DistributedScheduler.Domain.pdb
+C:\Users\NeocharisMichailidis\projects\tests\DistributedSchedulerTest\DistributedScheduler.Domain\obj\Debug\net10.0\ref\DistributedScheduler.Domain.dll
