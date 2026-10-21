@@ -1,7 +1,5 @@
 using DistributedScheduler.Worker;
 
 var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddHostedService<Worker>();
-
-var host = builder.Build();
-host.Run();
+builder.Services.AddJobWorker(builder.Configuration.GetConnectionString("Scheduler")!);
+builder.Build().Run();

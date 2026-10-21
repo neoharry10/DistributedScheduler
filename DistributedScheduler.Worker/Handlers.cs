@@ -1,0 +1,44 @@
+using DistributedScheduler.Domain;
+using Npgsql;
+
+namespace DistributedScheduler.Worker;
+
+internal static class Effects
+{
+    // The "proof" table: one row per successful execution.
+    public static async Task RecordAsync(NpgsqlDataSource db, Job job, string handler, CancellationToken ct)
+    {
+        await using var cmd = db.CreateCommand("INSERT INTO job_effects (job_id, handler) VALUES (@id, @h)");
+        cmd.Parameters.AddWithValue("id", job.Id);
+        cmd.Parameters.AddWithValue("h", handler);
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+}
+
+public class SendEmailJob(NpgsqlDataSource db) : IJobHandler
+{
+    public string Type => nameof(SendEmailJob);
+
+    public async Task HandleAsync(Job job, CancellationToken ct)
+    {
+        await Task.Delay(Random.Shared.Next(200, 800), ct);   // fake SMTP
+        await Effects.RecordAsync(db, job, Type, ct);
+    }
+}
+
+public class FlakyJob(NpgsqlDataSource db) : IJobHandler
+{
+    public string Type => nameof(FlakyJob);
+
+    public async Task HandleAsync(Job job, CancellationToken ct)
+    {
+        if (Random.Shared.NextDouble() < 0.5) throw new InvalidOperationException("Flaky failure");
+        await Effects.RecordAsync(db, job, Type, ct);
+    }
+}
+
+public class PoisonJob : IJobHandler
+{
+    public string Type => nameof(PoisonJob);
+    public Task HandleAsync(Job job, CancellationToken ct) => throw new InvalidOperationException("Always fails");
+}

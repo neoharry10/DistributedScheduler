@@ -76,4 +76,41 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         IdempotencyKey = r.IsDBNull(12) ? null : r.GetString(12),
         CreatedAt      = r.GetDateTime(13),
     };
+
+    public async Task<bool> CompleteAsync(Guid id, string workerId, CancellationToken ct = default)
+    {
+        const string sql = """
+            UPDATE jobs
+            SET status = 2, locked_by = NULL, locked_until = NULL, last_error = NULL
+            WHERE id = @id AND status = 1 AND locked_by = @worker;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("id", id);
+        cmd.Parameters.AddWithValue("worker", workerId);
+        return await cmd.ExecuteNonQueryAsync(ct) == 1;   // false = we lost the lease
+    }
+
+    public async Task<bool> FailAsync(Guid id, string workerId, string error, TimeSpan retryDelay, CancellationToken ct = default)
+    {
+        // attempts was already incremented at claim time.
+        // Out of attempts -> Dead (4). Otherwise back to Queued (0) with a delayed run_at.
+        const string sql = """
+            UPDATE jobs
+            SET status = CASE WHEN attempts >= max_attempts THEN 4 ELSE 0 END,
+                run_at = CASE WHEN attempts >= max_attempts THEN run_at
+                            ELSE now() + make_interval(secs => @delay_seconds) END,
+                last_error = @error,
+                locked_by = NULL,
+                locked_until = NULL
+            WHERE id = @id AND status = 1 AND locked_by = @worker;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("id", id);
+        cmd.Parameters.AddWithValue("worker", workerId);
+        cmd.Parameters.AddWithValue("error", error);
+        cmd.Parameters.AddWithValue("delay_seconds", retryDelay.TotalSeconds);
+        return await cmd.ExecuteNonQueryAsync(ct) == 1;
+    }
 }
