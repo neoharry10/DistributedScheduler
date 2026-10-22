@@ -67,3 +67,13 @@ public class TickJob(NpgsqlDataSource db) : IJobHandler
     public string Type => nameof(TickJob);
     public Task HandleAsync(Job job, CancellationToken ct) => Effects.RecordAsync(db, job, Type, ct);
 }
+
+public class GenerateInvoiceJob(NpgsqlDataSource db) : JobHandler<InvoicePayload>
+{
+    protected override async Task HandleAsync(InvoicePayload p, Job job, CancellationToken ct)
+    {
+        if (p.Amount <= 0) throw new ArgumentException("Amount must be positive");   // fails -> retries -> Dead
+        await Task.Delay(300, ct);                                                   // fake PDF rendering
+        await Effects.RecordAsync(db, job, Type, ct);
+    }
+}

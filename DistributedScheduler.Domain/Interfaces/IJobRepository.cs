@@ -9,10 +9,14 @@ public interface IJobRepository
     Task<IReadOnlyList<Guid>> ExtendLeasesAsync(string workerId, TimeSpan lease, CancellationToken ct = default);
     Task<bool> ReleaseAsync(Guid id, string workerId, CancellationToken ct = default);
     Task<int> ReapExpiredAsync(CancellationToken ct = default);
-
-    /// Create or update a recurring job. Safe to call on every startup.
     Task UpsertRecurringAsync(RecurringJob job, CancellationToken ct = default);
-
-    /// Enqueue one job per due recurring slot and advance the schedule. Returns how many jobs this call enqueued.
     Task<int> EnqueueDueRecurringAsync(int batchSize = 50, CancellationToken ct = default);
+
+    // reading and managing jobs
+    Task<Job?> GetAsync(Guid id, CancellationToken ct = default);
+    Task<Job?> GetByIdempotencyKeyAsync(string key, CancellationToken ct = default);
+    Task<IReadOnlyList<Job>> ListAsync(JobStatus? status, string? type, int limit, int offset, CancellationToken ct = default);
+    Task<IReadOnlyDictionary<JobStatus, long>> CountByStatusAsync(CancellationToken ct = default);
+    Task<bool> RequeueAsync(Guid id, CancellationToken ct = default);   // Dead/Failed -> Queued
+    Task<bool> CancelAsync(Guid id, CancellationToken ct = default);    // Queued -> Cancelled
 }

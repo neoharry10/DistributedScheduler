@@ -275,4 +275,78 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         await tx.CommitAsync(ct);
         return enqueued;
     }
+
+    private const string Cols =
+        "id, type, payload::text, queue, status, priority, run_at, attempts, max_attempts, " +
+        "locked_by, locked_until, last_error, idempotency_key, created_at, recurring_id, scheduled_for";
+
+    public async Task<Job?> GetAsync(Guid id, CancellationToken ct = default)
+    {
+        await using var cmd = db.CreateCommand($"SELECT {Cols} FROM jobs WHERE id = @id");
+        cmd.Parameters.AddWithValue("id", id);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        return await r.ReadAsync(ct) ? Map(r) : null;
+    }
+
+    public async Task<Job?> GetByIdempotencyKeyAsync(string key, CancellationToken ct = default)
+    {
+        await using var cmd = db.CreateCommand($"SELECT {Cols} FROM jobs WHERE idempotency_key = @key");
+        cmd.Parameters.AddWithValue("key", key);
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        return await r.ReadAsync(ct) ? Map(r) : null;
+    }
+
+    public async Task<IReadOnlyList<Job>> ListAsync(
+        JobStatus? status, string? type, int limit, int offset, CancellationToken ct = default)
+    {
+        var sql = $"""
+            SELECT {Cols} FROM jobs
+            WHERE (@status::smallint IS NULL OR status = @status::smallint)
+            AND (@type::text IS NULL OR type = @type::text)
+            ORDER BY created_at DESC, id
+            LIMIT @limit OFFSET @offset;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("status", status is null ? DBNull.Value : (object)(short)status.Value);
+        cmd.Parameters.AddWithValue("type", (object?)type ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("limit", limit);
+        cmd.Parameters.AddWithValue("offset", offset);
+
+        var jobs = new List<Job>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) jobs.Add(Map(r));
+        return jobs;
+    }
+
+    public async Task<IReadOnlyDictionary<JobStatus, long>> CountByStatusAsync(CancellationToken ct = default)
+    {
+        await using var cmd = db.CreateCommand("SELECT status, count(*) FROM jobs GROUP BY status");
+        var result = new Dictionary<JobStatus, long>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct)) result[(JobStatus)r.GetInt16(0)] = r.GetInt64(1);
+        return result;
+    }
+
+    public async Task<bool> RequeueAsync(Guid id, CancellationToken ct = default)
+    {
+        // last_error is kept on purpose: it's the history of why it died, until the next result overwrites it.
+        const string sql = """
+            UPDATE jobs
+            SET status = 0, attempts = 0, run_at = now(), locked_by = NULL, locked_until = NULL
+            WHERE id = @id AND status IN (3, 4);
+            """;
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("id", id);
+        return await cmd.ExecuteNonQueryAsync(ct) == 1;
+    }
+
+    public async Task<bool> CancelAsync(Guid id, CancellationToken ct = default)
+    {
+        // Only jobs nobody has claimed yet. The status = 0 check is what makes this race-safe against workers.
+        const string sql = "UPDATE jobs SET status = 5 WHERE id = @id AND status = 0;";
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("id", id);
+        return await cmd.ExecuteNonQueryAsync(ct) == 1;
+    }
 }

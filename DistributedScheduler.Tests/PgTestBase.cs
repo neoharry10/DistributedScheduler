@@ -88,4 +88,7 @@ public abstract class PgTestBase : IAsyncLifetime
         builder.Services.AddJobWorker(Pg.GetConnectionString(), configure);
         return builder.Build();
     }
+
+    protected Task<string?> LastErrorAsync(Guid id) =>
+        ScalarAsync<string?>("SELECT last_error FROM jobs WHERE id = @id", id);
 }

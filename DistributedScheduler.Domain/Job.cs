@@ -1,6 +1,6 @@
 namespace DistributedScheduler.Domain;
 
-public enum JobStatus : short { Queued = 0, Running = 1, Succeeded = 2, Failed = 3, Dead = 4 }
+public enum JobStatus : short { Queued = 0, Running = 1, Succeeded = 2, Failed = 3, Dead = 4, Cancelled = 5 }
 
 public class Job
 {
@@ -10,7 +10,7 @@ public class Job
     public string Queue { get; set; } = "default";
     public JobStatus Status { get; set; }
     public int Priority { get; set; }
-    public DateTime RunAt { get; set; }           // UTC
+    public DateTime RunAt { get; set; }           // always UTC
     public int Attempts { get; set; }
     public int MaxAttempts { get; set; } = 5;
     public string? LockedBy { get; set; }

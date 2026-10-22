@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="DistributedScheduler.Api/DistributedScheduler.Api.csproj" />
   <Project Path="DistributedScheduler.Data/DistributedScheduler.Data.csproj" />
   <Project Path="DistributedScheduler.Domain/DistributedScheduler.Domain.csproj" />
   <Project Path="DistributedScheduler.Tests/DistributedScheduler.Tests.csproj" />
