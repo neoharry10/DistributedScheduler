@@ -19,10 +19,14 @@ public static class JobWorkerExtensions
         services.AddScoped<IJobHandler, SlowJob>();
         services.AddScoped<IJobHandler, TickJob>();
         services.AddScoped<IJobHandler, GenerateInvoiceJob>();
+        services.AddScoped<IJobHandler, ProbeJob>();
 
         services.AddOptions<WorkerOptions>()
             .Configure(o => configure?.Invoke(o))
             .Validate(o => o.HeartbeatInterval * 3 <= o.Lease, "HeartbeatInterval must be at most Lease / 3")
+            .Validate(o => o.EffectiveQueues().All(kv => kv.Value.Concurrency >= 1 && kv.Value.BatchSize >= 1),
+                "Every queue needs Concurrency >= 1 and BatchSize >= 1")
+            .Validate(o => o.RateLimits.All(kv => kv.Value > 0), "Rate limits must be greater than 0")
             .ValidateOnStart();
 
         services.AddHostedService<JobWorker>();

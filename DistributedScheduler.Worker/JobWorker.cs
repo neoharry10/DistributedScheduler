@@ -17,16 +17,30 @@ public class JobWorker(
     private readonly WorkerOptions _o = options.Value;
     private readonly string _workerId = $"{Environment.MachineName}-{Environment.ProcessId}";
     private readonly ConcurrentDictionary<Guid, RunningJob> _running = new();
+    private readonly Dictionary<string, RateGate> _gates = new();   // filled once at startup, read-only after
     private volatile bool _drainExpired;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var slots = new SemaphoreSlim(_o.Concurrency);
-        var channel = Channel.CreateBounded<Job>(_o.Concurrency);
+        foreach (var (type, perSecond) in _o.RateLimits) _gates[type] = new RateGate(perSecond);
 
-        var consumers = Enumerable.Range(0, _o.Concurrency)
-            .Select(_ => Task.Run(() => ConsumeAsync(channel.Reader, slots)))
-            .ToArray();
+        var writers = new List<ChannelWriter<Job>>();
+        var pollers = new List<Task>();
+        var consumers = new List<Task>();
+
+        foreach (var (queue, q) in _o.EffectiveQueues())
+        {
+            var slots = new SemaphoreSlim(q.Concurrency);
+            var channel = Channel.CreateBounded<Job>(q.Concurrency);   // capacity == slots, so writes never block
+            writers.Add(channel.Writer);
+
+            for (var i = 0; i < q.Concurrency; i++)
+                consumers.Add(Task.Run(() => ConsumeAsync(channel.Reader, slots)));
+
+            pollers.Add(Task.Run(() => PollAsync(queue, q, channel.Writer, slots, stoppingToken)));
+            log.LogInformation("Worker {WorkerId} listening on queue '{Queue}' with {Concurrency} slot(s)",
+                _workerId, queue, q.Concurrency);
+        }
 
         // Its own token on purpose: jobs keep running while we drain after stoppingToken fires,
         // so their leases must keep being extended until the very end.
@@ -35,20 +49,20 @@ public class JobWorker(
 
         try
         {
-            await PollAsync(channel.Writer, slots, stoppingToken);
+            await Task.WhenAll(pollers);
         }
         finally
         {
-            channel.Writer.Complete();
+            foreach (var w in writers) w.Complete();
             await DrainAsync(Task.WhenAll(consumers));
             heartbeatCts.Cancel();
             await heartbeat;
         }
     }
 
-    // ---------- claiming (same as M2) ----------
+    // ---------- claiming (one loop per queue) ----------
 
-    private async Task PollAsync(ChannelWriter<Job> writer, SemaphoreSlim slots, CancellationToken ct)
+    private async Task PollAsync(string queue, QueueOptions q, ChannelWriter<Job> writer, SemaphoreSlim slots, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
@@ -57,17 +71,17 @@ public class JobWorker(
             {
                 await slots.WaitAsync(ct);
                 taken = 1;
-                while (taken < _o.BatchSize && slots.Wait(0)) taken++;
+                while (taken < q.BatchSize && slots.Wait(0)) taken++;
             }
             catch (OperationCanceledException) { break; }
 
             IReadOnlyList<Job> jobs = [];
             try
             {
-                jobs = await repo.ClaimAsync(_workerId, _o.Queue, taken, _o.Lease, ct);
+                jobs = await repo.ClaimAsync(_workerId, queue, taken, _o.Lease, ct);
             }
             catch (OperationCanceledException) { /* shutting down */ }
-            catch (Exception ex) { log.LogError(ex, "Claim failed, backing off"); }
+            catch (Exception ex) { log.LogError(ex, "Claim failed on queue '{Queue}', backing off", queue); }
 
             if (taken > jobs.Count) slots.Release(taken - jobs.Count);
 
@@ -97,7 +111,7 @@ public class JobWorker(
     {
         var rj = new RunningJob();
         _running[job.Id] = rj;
-        if (_drainExpired) rj.Cancel(CancelReason.Shutdown);   // started after the drain timeout already hit
+        if (_drainExpired) rj.Cancel(CancelReason.Shutdown);
 
         Exception? error = null;
         try
@@ -107,13 +121,15 @@ public class JobWorker(
                               .FirstOrDefault(h => h.Type == job.Type)
                           ?? throw new InvalidOperationException($"No handler for job type '{job.Type}'");
 
+            // Rate limit: wait for our start slot. We're already registered in _running, so the heartbeat
+            // keeps the lease alive while we wait, and shutdown can still cancel us.
+            if (_gates.TryGetValue(job.Type, out var gate)) await gate.WaitAsync(rj.Token);
+
             await handler.HandleAsync(job, rj.Token);
         }
         catch (Exception ex) { error = ex; }
         finally
         {
-            // Deregister BEFORE touching the DB. The heartbeat only cancels jobs that are still registered,
-            // so it can never cancel a job that already finished.
             _running.TryRemove(job.Id, out _);
             rj.Dispose();
         }
@@ -133,7 +149,6 @@ public class JobWorker(
                 break;
 
             case CancelReason.LeaseLost:
-                // Someone else owns it now. Writing a result here would be wrong (and the guarded SQL would refuse anyway).
                 log.LogWarning("Job {JobId} cancelled because its lease was lost", job.Id);
                 break;
 
@@ -146,7 +161,7 @@ public class JobWorker(
         }
     }
 
-    // ---------- heartbeat ----------
+    // ---------- heartbeat (shared by all queues) ----------
 
     private async Task HeartbeatAsync(CancellationToken ct)
     {
@@ -167,8 +182,6 @@ public class JobWorker(
 
     private async Task BeatAsync(CancellationToken ct)
     {
-        // Snapshot BEFORE the query: everything in it was already claimed, so if the DB says we
-        // don't hold it anymore, the lease is genuinely lost (not just "claimed a moment ago").
         var snapshot = _running.Keys.ToArray();
         var held = (await repo.ExtendLeasesAsync(_workerId, _o.Lease, ct)).ToHashSet();
 
@@ -182,7 +195,7 @@ public class JobWorker(
         }
     }
 
-    // ---------- graceful shutdown ----------
+    // ---------- graceful shutdown (one drain for all queues) ----------
 
     private async Task DrainAsync(Task consumers)
     {
@@ -194,7 +207,7 @@ public class JobWorker(
         catch (TimeoutException)
         {
             log.LogWarning("Drain timeout: cancelling {Count} running job(s)", _running.Count);
-            _drainExpired = true;   // set the flag first so a job that starts right now cancels itself
+            _drainExpired = true;
             foreach (var rj in _running.Values) rj.Cancel(CancelReason.Shutdown);
             await consumers;
         }

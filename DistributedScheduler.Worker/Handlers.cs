@@ -77,3 +77,35 @@ public class GenerateInvoiceJob(NpgsqlDataSource db) : JobHandler<InvoicePayload
         await Effects.RecordAsync(db, job, Type, ct);
     }
 }
+
+public static class ConcurrencyProbe
+{
+    private static readonly object L = new();
+    private static readonly Dictionary<string, int> Cur = new(), Max = new();
+
+    public static void Enter(string key)
+    {
+        lock (L)
+        {
+            Cur[key] = Cur.GetValueOrDefault(key) + 1;
+            Max[key] = Math.Max(Max.GetValueOrDefault(key), Cur[key]);
+        }
+    }
+
+    public static void Exit(string key) { lock (L) Cur[key]--; }
+
+    public static int MaxSeen(string key) { lock (L) return Max.GetValueOrDefault(key); }
+}
+
+public class ProbeJob(NpgsqlDataSource db) : IJobHandler
+{
+    public string Type => nameof(ProbeJob);
+
+    public async Task HandleAsync(Job job, CancellationToken ct)
+    {
+        ConcurrencyProbe.Enter(job.Queue);
+        try { await Task.Delay(300, ct); }
+        finally { ConcurrencyProbe.Exit(job.Queue); }
+        await Effects.RecordAsync(db, job, Type, ct);
+    }
+}
