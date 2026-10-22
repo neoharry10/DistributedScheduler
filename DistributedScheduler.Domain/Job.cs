@@ -2,6 +2,8 @@ namespace DistributedScheduler.Domain;
 
 public enum JobStatus : short { Queued = 0, Running = 1, Succeeded = 2, Failed = 3, Dead = 4, Cancelled = 5 }
 
+public record ThroughputPoint(DateTime Minute, long Succeeded, long Dead);
+
 public class Job
 {
     public Guid Id { get; set; }

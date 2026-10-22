@@ -349,4 +349,26 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         cmd.Parameters.AddWithValue("id", id);
         return await cmd.ExecuteNonQueryAsync(ct) == 1;
     }
+
+    public async Task<IReadOnlyList<ThroughputPoint>> ThroughputAsync(int minutes, CancellationToken ct = default)
+    {
+        const string sql = """
+            SELECT date_trunc('minute', finished_at),
+                count(*) FILTER (WHERE status = 2),
+                count(*) FILTER (WHERE status = 4)
+            FROM jobs
+            WHERE finished_at >= now() - make_interval(mins => @mins)
+            GROUP BY 1
+            ORDER BY 1;
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("mins", minutes);
+
+        var points = new List<ThroughputPoint>();
+        await using var r = await cmd.ExecuteReaderAsync(ct);
+        while (await r.ReadAsync(ct))
+            points.Add(new ThroughputPoint(r.GetDateTime(0), r.GetInt64(1), r.GetInt64(2)));
+        return points;
+    }
 }

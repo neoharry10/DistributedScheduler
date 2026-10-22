@@ -1,0 +1,15 @@
+<span class="badge @Css">@Status</span>
+
+@code {
+    [Parameter, EditorRequired] public JobStatus Status { get; set; }
+
+    private string Css => Status switch
+    {
+        JobStatus.Queued => "text-bg-secondary",
+        JobStatus.Running => "text-bg-primary",
+        JobStatus.Succeeded => "text-bg-success",
+        JobStatus.Dead => "text-bg-danger",
+        JobStatus.Cancelled => "text-bg-dark",
+        _ => "text-bg-warning"
+    };
+}

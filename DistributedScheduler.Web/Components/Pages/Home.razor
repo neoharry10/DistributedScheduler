@@ -1,7 +1,120 @@
 ﻿@page "/"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using System.Globalization
+@implements IDisposable
+@inject IJobRepository Repo
+@inject JobChangeFeed Feed
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Scheduler</PageTitle>
 
-<h1>Hello, world!</h1>
+<h1 class="mb-3">Scheduler</h1>
 
-Welcome to your new app.
+<div class="d-flex gap-3 mb-2 flex-wrap">
+    @foreach (var s in Statuses)
+    {
+        <button type="button" class="stat @(_filter == s ? "active" : "")" @onclick="() => Toggle(s)">
+            <div class="n">@(_counts.GetValueOrDefault(s))</div>
+            <div class="l">@s</div>
+        </button>
+    }
+</div>
+<p class="text-muted small">Click a card to filter the list, click it again to clear.</p>
+
+<h5 class="mt-4">Finished per minute <span class="text-muted small">(green = succeeded, red = dead)</span></h5>
+<svg viewBox="0 0 600 130" class="chart" role="img" aria-label="Jobs finished per minute">
+    @for (var i = 0; i < _bars.Count; i++)
+    {
+        var b = _bars[i];
+        var okH = b.Succeeded * 100 / _max;
+        var deadH = b.Dead * 100 / _max;
+        <rect x="@(i * 20 + 1)" y="@(110 - okH - deadH)" width="18" height="@deadH" fill="#dc3545">
+            <title>@b.Minute.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture): @b.Succeeded ok, @b.Dead dead</title>
+        </rect>
+        <rect x="@(i * 20 + 1)" y="@(110 - okH)" width="18" height="@okH" fill="#198754">
+            <title>@b.Minute.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture): @b.Succeeded ok, @b.Dead dead</title>
+        </rect>
+    }
+    <line x1="0" y1="110.5" x2="600" y2="110.5" stroke="#999" />
+    <text x="0" y="126" font-size="10" fill="#999">@FirstLabel</text>
+    <text x="600" y="126" font-size="10" fill="#999" text-anchor="end">@LastLabel</text>
+    
+</svg>
+
+<h5 class="mt-4">@(_filter is null ? "Latest jobs" : $"Latest {_filter} jobs")</h5>
+<table class="table table-sm table-hover align-middle">
+    <thead>
+        <tr><th>Id</th><th>Type</th><th>Queue</th><th>Status</th><th>Attempts</th><th>Run at</th><th>Last error</th></tr>
+    </thead>
+    <tbody>
+        @foreach (var j in _jobs)
+        {
+            <tr>
+                <td><a href="/jobs/@j.Id">@Fmt.Short(j.Id)</a></td>
+                <td>@j.Type</td>
+                <td>@j.Queue</td>
+                <td><StatusBadge Status="j.Status" /></td>
+                <td>@j.Attempts / @j.MaxAttempts</td>
+                <td>@Fmt.Time(j.RunAt)</td>
+                <td class="text-danger small">@Fmt.FirstLine(j.LastError)</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private static readonly JobStatus[] Statuses =
+        [JobStatus.Queued, JobStatus.Running, JobStatus.Succeeded, JobStatus.Dead, JobStatus.Cancelled];
+
+    private IReadOnlyDictionary<JobStatus, long> _counts = new Dictionary<JobStatus, long>();
+    private IReadOnlyList<Job> _jobs = [];
+    private List<ThroughputPoint> _bars = [];
+    private long _max = 1;
+    private JobStatus? _filter;
+
+    private string FirstLabel => _bars.Count > 0
+        ? _bars[0].Minute.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) : "";
+
+    private string LastLabel => _bars.Count > 0
+        ? _bars[^1].Minute.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture) : "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        Feed.Changed += OnChanged;
+        await LoadAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(async () =>
+    {
+        await LoadAsync();
+        StateHasChanged();
+    });
+
+    private async Task Toggle(JobStatus s)
+    {
+        _filter = _filter == s ? null : s;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        var counts = Repo.CountByStatusAsync();
+        var jobs = Repo.ListAsync(_filter, null, 50, 0);
+        var points = Repo.ThroughputAsync(30);
+        await Task.WhenAll(counts, jobs, points);
+
+        _counts = await counts;
+        _jobs = await jobs;
+
+        // Always 30 buckets, zero-filled, so the chart doesn't jump around.
+        var now = DateTime.UtcNow;
+        var current = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+        var byMinute = (await points).ToDictionary(p => p.Minute.Ticks);
+        _bars = Enumerable.Range(0, 30)
+            .Select(i => current.AddMinutes(i - 29))
+            .Select(m => byMinute.TryGetValue(m.Ticks, out var p) ? p : new ThroughputPoint(m, 0, 0))
+            .ToList();
+        _max = Math.Max(1, _bars.Max(b => b.Succeeded + b.Dead));
+    }
+
+    public void Dispose() => Feed.Changed -= OnChanged;
+}

@@ -1,0 +1,111 @@
+@page "/jobs/{Id:guid}"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using System.Text.Json
+@implements IDisposable
+@inject IJobRepository Repo
+@inject JobChangeFeed Feed
+
+<PageTitle>Job @(Fmt.Short(Id))</PageTitle>
+
+<p><a href="/">&larr; All jobs</a></p>
+
+@if (!_loaded)
+{
+    <p>Loading...</p>
+}
+else if (_job is null)
+{
+    <p>Job not found.</p>
+}
+else
+{
+    <h2 class="d-flex align-items-center gap-2">@_job.Type <StatusBadge Status="_job.Status" /></h2>
+    <p class="text-muted">@_job.Id</p>
+
+    <div class="mb-3 d-flex gap-2">
+        <button class="btn btn-warning" disabled="@(!CanRequeue)" @onclick="RequeueAsync">Requeue</button>
+        <button class="btn btn-outline-danger" disabled="@(!CanCancel)" @onclick="CancelAsync">Cancel</button>
+    </div>
+
+    @if (_message is not null)
+    {
+        <div class="alert alert-info">@_message</div>
+    }
+
+    <dl class="row">
+        <dt class="col-sm-3">Queue</dt><dd class="col-sm-9">@_job.Queue</dd>
+        <dt class="col-sm-3">Priority</dt><dd class="col-sm-9">@_job.Priority</dd>
+        <dt class="col-sm-3">Attempts</dt><dd class="col-sm-9">@_job.Attempts / @_job.MaxAttempts</dd>
+        <dt class="col-sm-3">Created</dt><dd class="col-sm-9">@Fmt.Time(_job.CreatedAt)</dd>
+        <dt class="col-sm-3">Run at</dt><dd class="col-sm-9">@Fmt.Time(_job.RunAt)</dd>
+        <dt class="col-sm-3">Locked by</dt><dd class="col-sm-9">@(_job.LockedBy ?? "-")</dd>
+        <dt class="col-sm-3">Lease until</dt><dd class="col-sm-9">@Fmt.Time(_job.LockedUntil)</dd>
+        <dt class="col-sm-3">Idempotency key</dt><dd class="col-sm-9">@(_job.IdempotencyKey ?? "-")</dd>
+        <dt class="col-sm-3">Recurring</dt><dd class="col-sm-9">@(_job.RecurringId ?? "-")</dd>
+    </dl>
+
+    @if (_job.LastError is not null)
+    {
+        <h5>Last error</h5>
+        <pre class="text-danger" style="white-space: pre-wrap">@_job.LastError</pre>
+    }
+
+    @if (_job.Payload is not null)
+    {
+        <h5>Payload</h5>
+        <pre>@Pretty(_job.Payload)</pre>
+    }
+}
+
+@code {
+    [Parameter] public Guid Id { get; set; }
+
+    private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    private Job? _job;
+    private bool _loaded;
+    private string? _message;
+
+    private bool CanRequeue => _job?.Status is JobStatus.Dead or JobStatus.Failed;
+    private bool CanCancel => _job?.Status == JobStatus.Queued;
+
+    protected override void OnInitialized() => Feed.Changed += OnChanged;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _message = null;
+        await LoadAsync();
+    }
+
+    private void OnChanged() => _ = InvokeAsync(async () =>
+    {
+        await LoadAsync();
+        StateHasChanged();
+    });
+
+    private async Task LoadAsync()
+    {
+        _job = await Repo.GetAsync(Id);
+        _loaded = true;
+    }
+
+    private async Task RequeueAsync()
+    {
+        _message = await Repo.RequeueAsync(Id) ? "Requeued." : "Nothing done: the job is no longer Dead or Failed.";
+        await LoadAsync();
+    }
+
+    private async Task CancelAsync()
+    {
+        _message = await Repo.CancelAsync(Id) ? "Cancelled." : "Nothing done: only Queued jobs can be cancelled (a worker may have just claimed it).";
+        await LoadAsync();
+    }
+
+    private static string Pretty(string json)
+    {
+        try { return JsonSerializer.Serialize(JsonSerializer.Deserialize<JsonElement>(json), Indented); }
+        catch (JsonException) { return json; }
+    }
+
+    public void Dispose() => Feed.Changed -= OnChanged;
+}

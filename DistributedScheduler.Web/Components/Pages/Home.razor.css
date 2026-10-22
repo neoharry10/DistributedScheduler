@@ -1,0 +1,6 @@
+.stat { border: 1px solid #dee2e6; border-radius: .5rem; padding: .75rem 1.25rem; background: transparent; min-width: 120px; text-align: left; color: inherit; }
+.stat:hover { background: rgba(127, 127, 127, .1); }
+.stat.active { border-color: #0d6efd; box-shadow: 0 0 0 2px rgba(13, 110, 253, .25); }
+.n { font-size: 1.75rem; font-weight: 600; line-height: 1.1; }
+.l { font-size: .85rem; opacity: .7; }
+.chart { width: 100%; max-width: 720px; height: auto; }

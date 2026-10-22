@@ -1,5 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
+  <ItemGroup>
+    <ProjectReference Include="..\DistributedScheduler.Domain\DistributedScheduler.Domain.csproj" />
+    <ProjectReference Include="..\DistributedScheduler.Data\DistributedScheduler.Data.csproj" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

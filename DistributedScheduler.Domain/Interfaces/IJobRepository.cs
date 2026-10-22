@@ -19,4 +19,6 @@ public interface IJobRepository
     Task<IReadOnlyDictionary<JobStatus, long>> CountByStatusAsync(CancellationToken ct = default);
     Task<bool> RequeueAsync(Guid id, CancellationToken ct = default);   // Dead/Failed -> Queued
     Task<bool> CancelAsync(Guid id, CancellationToken ct = default);    // Queued -> Cancelled
+
+    Task<IReadOnlyList<ThroughputPoint>> ThroughputAsync(int minutes, CancellationToken ct = default);
 }

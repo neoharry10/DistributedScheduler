@@ -1,6 +1,18 @@
 using DistributedScheduler.Web.Components;
+using DistributedScheduler.Data;
+using DistributedScheduler.Domain;
+using DistributedScheduler.Web.Services;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var cs = builder.Configuration.GetConnectionString("Scheduler")
+    ?? throw new InvalidOperationException("ConnectionStrings:Scheduler is missing");
+
+builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(cs));
+builder.Services.AddSingleton<IJobRepository, JobRepository>();
+builder.Services.AddSingleton<JobChangeFeed>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<JobChangeFeed>());
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
