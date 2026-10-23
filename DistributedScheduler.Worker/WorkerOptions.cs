@@ -35,4 +35,8 @@ public class WorkerOptions
         Queues.Count > 0
             ? Queues
             : new Dictionary<string, QueueOptions> { [Queue] = new() { Concurrency = Concurrency, BatchSize = BatchSize } };
+
+    public TimeSpan RetentionInterval { get; set; } = TimeSpan.FromHours(1);
+    public TimeSpan SucceededRetention { get; set; } = TimeSpan.FromDays(7);
+    public TimeSpan DeadRetention { get; set; } = TimeSpan.FromDays(30);
 }

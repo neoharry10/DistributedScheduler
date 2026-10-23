@@ -33,6 +33,7 @@ public static class JobWorkerExtensions
         services.AddHostedService<JobWorker>();
         services.AddHostedService<LeaseReaper>();
         services.AddHostedService<RecurringScheduler>();
+        services.AddHostedService<RetentionService>();
         return services;
     }
 }

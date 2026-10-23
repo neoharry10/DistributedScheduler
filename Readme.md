@@ -40,3 +40,25 @@ CpuJob	        Hashes random bytes for a few seconds.	                          
 WebhookJob	    Does a real HTTP POST to a URL, with a timeout.	                        Real I/O failure handling.
 
 
+#
+
+```
+$env:LOADTEST_CONNECTION = "Host=localhost;Port=5432;Database=scheduler_loadtest;Username=scheduler;Password=scheduler;Maximum Pool Size=40;Timeout=30"
+$lt = "dotnet run -c Release --project DistributedScheduler.LoadTest --"
+$runs = @(
+  "--workers=2 --concurrency=32 --batch=1",   "--workers=2 --concurrency=32 --batch=4",
+  "--workers=2 --concurrency=32 --batch=16",  "--workers=2 --concurrency=32 --batch=32",
+  "--workers=2 --concurrency=8  --batch=8",   "--workers=2 --concurrency=16 --batch=16",
+  "--workers=1 --concurrency=16 --batch=16",  "--workers=4 --concurrency=16 --batch=16",
+  "--workers=2 --concurrency=32 --batch=32 --notify=0"
+)
+foreach ($r in $runs) { iex "$lt --jobs=5000 $r" | Select-String "RESULT" | Tee-Object -Append PERF.txt }
+```
+
+
+
+# TODO: 
+
+Make a good readme to showcase the app 
+
+perf.txt file 

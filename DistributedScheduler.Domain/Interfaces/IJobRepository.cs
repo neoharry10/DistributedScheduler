@@ -21,4 +21,5 @@ public interface IJobRepository
     Task<bool> CancelAsync(Guid id, CancellationToken ct = default);    // Queued -> Cancelled
 
     Task<IReadOnlyList<ThroughputPoint>> ThroughputAsync(int minutes, CancellationToken ct = default);
+    Task<int> DeleteFinishedAsync(TimeSpan succeededAge, TimeSpan deadAge, int batchSize, CancellationToken ct = default);
 }

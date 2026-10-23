@@ -387,4 +387,24 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
             points.Add(new ThroughputPoint(r.GetDateTime(0), r.GetInt64(1), r.GetInt64(2)));
         return points;
     }
+
+    public async Task<int> DeleteFinishedAsync(TimeSpan succeededAge, TimeSpan deadAge, int batchSize, CancellationToken ct = default)
+    {
+        // Succeeded/Cancelled go early, Dead stays longer for debugging. Small batches keep each lock short.
+        // SKIP LOCKED lets several workers run this at once without stepping on each other.
+        const string sql = """
+            DELETE FROM jobs WHERE id IN (
+                SELECT id FROM jobs
+                WHERE (status IN (2, 5) AND finished_at < now() - make_interval(secs => @ok))
+                OR (status = 4       AND finished_at < now() - make_interval(secs => @dead))
+                LIMIT @batch
+                FOR UPDATE SKIP LOCKED);
+            """;
+
+        await using var cmd = db.CreateCommand(sql);
+        cmd.Parameters.AddWithValue("ok", succeededAge.TotalSeconds);
+        cmd.Parameters.AddWithValue("dead", deadAge.TotalSeconds);
+        cmd.Parameters.AddWithValue("batch", batchSize);
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
 }
