@@ -33,6 +33,7 @@ else
     }
 
     <dl class="row">
+        <dt class="col-sm-3">Trace id</dt><dd class="col-sm-9"><code>@TraceId</code></dd>
         <dt class="col-sm-3">Queue</dt><dd class="col-sm-9">@_job.Queue</dd>
         <dt class="col-sm-3">Priority</dt><dd class="col-sm-9">@_job.Priority</dd>
         <dt class="col-sm-3">Attempts</dt><dd class="col-sm-9">@_job.Attempts / @_job.MaxAttempts</dd>
@@ -59,9 +60,10 @@ else
 
 @code {
     [Parameter] public Guid Id { get; set; }
-
+    
+    private string TraceId => _job?.TraceParent?.Split('-') is { Length: >= 2 } parts ? parts[1] : "-";
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
-
+    
     private Job? _job;
     private bool _loaded;
     private string? _message;

@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\DistributedScheduler.Domain\DistributedScheduler.Domain.csproj" />
+    <ProjectReference Include="..\DistributedScheduler.Data\DistributedScheduler.Data.csproj" />
+    <ProjectReference Include="..\DistributedScheduler.Worker\DistributedScheduler.Worker.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

@@ -17,7 +17,10 @@ public class LeaseReaper(IJobRepository repo, IOptions<WorkerOptions> options, I
                 try
                 {
                     var n = await repo.ReapExpiredAsync(ct);
-                    if (n > 0) log.LogWarning("Reaped {Count} job(s) with expired leases", n);
+                    if (n > 0) {
+                        Telemetry.Reaped.Add(n);
+                        log.LogWarning("Reaped {Count} job(s) with expired leases", n);
+                    }
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using DistributedScheduler.Data;
 using DistributedScheduler.Domain;
+using OpenTelemetry.Trace;
 using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,6 +13,8 @@ Migrator.Run(cs);   // the Api owns the schema; workers just connect, so start t
 
 builder.Services.AddSingleton(_ => NpgsqlDataSource.Create(cs));
 builder.Services.AddSingleton<IJobRepository, JobRepository>();
+builder.Services.AddHostedService<QueueStatsSampler>();
+builder.Services.AddSchedulerTelemetry(builder.Configuration, "scheduler-api", t => t.AddAspNetCoreInstrumentation());
 
 var app = builder.Build();
 

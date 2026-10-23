@@ -109,3 +109,9 @@ public class ProbeJob(NpgsqlDataSource db) : IJobHandler
         await Effects.RecordAsync(db, job, Type, ct);
     }
 }
+
+public class NoopJob : IJobHandler
+{
+    public string Type => nameof(NoopJob);
+    public Task HandleAsync(Job job, CancellationToken ct) => Task.CompletedTask;
+}

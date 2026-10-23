@@ -22,4 +22,5 @@ public class Job
     public DateTime CreatedAt { get; set; }
     public string? RecurringId { get; set; }
     public DateTime? ScheduledFor { get; set; }
+    public string? TraceParent { get; set; }
 }

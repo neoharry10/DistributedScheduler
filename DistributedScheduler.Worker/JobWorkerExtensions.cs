@@ -20,6 +20,7 @@ public static class JobWorkerExtensions
         services.AddScoped<IJobHandler, TickJob>();
         services.AddScoped<IJobHandler, GenerateInvoiceJob>();
         services.AddScoped<IJobHandler, ProbeJob>();
+        services.AddScoped<IJobHandler, NoopJob>();
 
         services.AddOptions<WorkerOptions>()
             .Configure(o => configure?.Invoke(o))

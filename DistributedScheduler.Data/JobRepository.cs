@@ -1,4 +1,5 @@
 using DistributedScheduler.Domain;
+using System.Diagnostics;
 using Npgsql;
 
 namespace DistributedScheduler.Data;
@@ -7,9 +8,14 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
 {
     public async Task<bool> EnqueueAsync(Job job, CancellationToken ct = default)
     {
+        using var activity = Telemetry.Source.StartActivity($"enqueue {job.Type}", ActivityKind.Producer);
+        activity?.SetTag("scheduler.job.id", job.Id);
+        activity?.SetTag("scheduler.queue", job.Queue);
+        job.TraceParent ??= activity?.Id ?? Activity.Current?.Id;   // W3C traceparent, stored with the job
+
         const string sql = """
-            INSERT INTO jobs (id, type, payload, queue, priority, run_at, max_attempts, idempotency_key)
-            VALUES (@id, @type, @payload::jsonb, @queue, @priority, @run_at, @max_attempts, @idempotency_key)
+            INSERT INTO jobs (id, type, payload, queue, priority, run_at, max_attempts, idempotency_key, trace_parent)
+            VALUES (@id, @type, @payload::jsonb, @queue, @priority, @run_at, @max_attempts, @idempotency_key, @trace_parent)
             ON CONFLICT (idempotency_key) DO NOTHING;
             """;
 
@@ -22,8 +28,12 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         cmd.Parameters.AddWithValue("run_at", job.RunAt);
         cmd.Parameters.AddWithValue("max_attempts", job.MaxAttempts);
         cmd.Parameters.AddWithValue("idempotency_key", (object?)job.IdempotencyKey ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("trace_parent", (object?)job.TraceParent ?? DBNull.Value);
 
-        return await cmd.ExecuteNonQueryAsync(ct) == 1;   // false = duplicate idempotency key
+        var created = await cmd.ExecuteNonQueryAsync(ct) == 1;   // false = duplicate idempotency key
+        activity?.SetTag("scheduler.duplicate", !created);
+        if (created) Telemetry.Enqueued.Add(1, new TagList { { "type", job.Type }, { "queue", job.Queue } });
+        return created;
     }
 
     public async Task<IReadOnlyList<Job>> ClaimAsync(
@@ -43,7 +53,7 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
                 FOR UPDATE SKIP LOCKED)
             RETURNING id, type, payload::text, queue, status, priority, run_at,
                 attempts, max_attempts, locked_by, locked_until, last_error,
-                idempotency_key, created_at, recurring_id, scheduled_for;
+                idempotency_key, created_at, recurring_id, scheduled_for, trace_parent;
             """;
 
         await using var cmd = db.CreateCommand(sql);
@@ -77,6 +87,7 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         CreatedAt      = r.GetDateTime(13),
         RecurringId    = r.IsDBNull(14) ? null : r.GetString(14),
         ScheduledFor   = r.IsDBNull(15) ? null : r.GetDateTime(15),
+        TraceParent    = r.IsDBNull(16) ? null : r.GetString(16),
     };
 
     public async Task<bool> CompleteAsync(Guid id, string workerId, CancellationToken ct = default)
@@ -242,6 +253,7 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         }   // reader closed before we reuse the connection
 
         var enqueued = 0;
+        var created = new List<RecurringJob>();
         foreach (var (rj, now) in due)
         {
             // Missed slots are skipped on purpose: after downtime you get ONE catch-up run, not 60.
@@ -259,7 +271,9 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
                 ins.Parameters.AddWithValue("queue", rj.Queue);
                 ins.Parameters.AddWithValue("slot", rj.NextRunAt);
                 ins.Parameters.AddWithValue("rid", rj.Id);
-                enqueued += await ins.ExecuteNonQueryAsync(ct);
+                var rows = await ins.ExecuteNonQueryAsync(ct);
+                enqueued += rows;
+                if (rows == 1) created.Add(rj);
             }
 
             await using (var upd = new NpgsqlCommand(
@@ -273,12 +287,14 @@ public class JobRepository(NpgsqlDataSource db) : IJobRepository
         }
 
         await tx.CommitAsync(ct);
+        foreach (var rj in created)
+            Telemetry.Enqueued.Add(1, new TagList { { "type", rj.Type }, { "queue", rj.Queue } });
         return enqueued;
     }
 
     private const string Cols =
         "id, type, payload::text, queue, status, priority, run_at, attempts, max_attempts, " +
-        "locked_by, locked_until, last_error, idempotency_key, created_at, recurring_id, scheduled_for";
+        "locked_by, locked_until, last_error, idempotency_key, created_at, recurring_id, scheduled_for, trace_parent";
 
     public async Task<Job?> GetAsync(Guid id, CancellationToken ct = default)
     {

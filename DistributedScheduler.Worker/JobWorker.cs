@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Diagnostics;
 
 namespace DistributedScheduler.Worker;
 
@@ -15,7 +16,7 @@ public class JobWorker(
     ILogger<JobWorker> log) : BackgroundService
 {
     private readonly WorkerOptions _o = options.Value;
-    private readonly string _workerId = $"{Environment.MachineName}-{Environment.ProcessId}";
+    private readonly string _workerId = options.Value.WorkerId ?? $"{Environment.MachineName}-{Environment.ProcessId}";
     private readonly ConcurrentDictionary<Guid, RunningJob> _running = new();
     private readonly Dictionary<string, RateGate> _gates = new();   // filled once at startup, read-only after
     private volatile bool _drainExpired;
@@ -113,18 +114,29 @@ public class JobWorker(
         _running[job.Id] = rj;
         if (_drainExpired) rj.Cancel(CancelReason.Shutdown);
 
+        // Continue the trace that was active when the job was enqueued (a failed parse just starts a new trace).
+        ActivityContext.TryParse(job.TraceParent, null, true, out var parent);
+        using var activity = Telemetry.Source.StartActivity($"job {job.Type}", ActivityKind.Consumer, parent);
+        activity?.SetTag("scheduler.job.id", job.Id);
+        activity?.SetTag("scheduler.queue", job.Queue);
+        activity?.SetTag("scheduler.attempt", job.Attempts);
+        activity?.SetTag("scheduler.worker", _workerId);
+
+        // Clamped at 0: the app clock and the DB clock can differ slightly.
+        Telemetry.QueueLatency.Record(Math.Max(0, (DateTime.UtcNow - job.RunAt).TotalSeconds), Tags(job));
+
+        long? started = null;
         Exception? error = null;
         try
         {
             await using var scope = scopes.CreateAsyncScope();
             var handler = scope.ServiceProvider.GetServices<IJobHandler>()
-                              .FirstOrDefault(h => h.Type == job.Type)
-                          ?? throw new InvalidOperationException($"No handler for job type '{job.Type}'");
+                            .FirstOrDefault(h => h.Type == job.Type)
+                        ?? throw new InvalidOperationException($"No handler for job type '{job.Type}'");
 
-            // Rate limit: wait for our start slot. We're already registered in _running, so the heartbeat
-            // keeps the lease alive while we wait, and shutdown can still cancel us.
             if (_gates.TryGetValue(job.Type, out var gate)) await gate.WaitAsync(rj.Token);
 
+            started = Stopwatch.GetTimestamp();   // measure the handler, not the rate-limit wait
             await handler.HandleAsync(job, rj.Token);
         }
         catch (Exception ex) { error = ex; }
@@ -134,31 +146,52 @@ public class JobWorker(
             rj.Dispose();
         }
 
+        if (started is { } t0)
+            Telemetry.Duration.Record(Stopwatch.GetElapsedTime(t0).TotalSeconds, Tags(job, error is null ? "ok" : "error"));
+
+        string outcome;
         if (error is null)
         {
-            if (!await repo.CompleteAsync(job.Id, _workerId))
-                log.LogWarning("Job {JobId} finished but we no longer hold the lease", job.Id);
-            return;
+            var completed = await repo.CompleteAsync(job.Id, _workerId);
+            if (!completed) log.LogWarning("Job {JobId} finished but we no longer hold the lease", job.Id);
+            outcome = completed ? "succeeded" : "lease_lost";
         }
-
-        switch (rj.Reason)
+        else
         {
-            case CancelReason.Shutdown:
-                var released = await repo.ReleaseAsync(job.Id, _workerId);
-                log.LogInformation("Job {JobId} interrupted by shutdown, released={Released}", job.Id, released);
-                break;
+            switch (rj.Reason)
+            {
+                case CancelReason.Shutdown:
+                    var released = await repo.ReleaseAsync(job.Id, _workerId);
+                    log.LogInformation("Job {JobId} interrupted by shutdown, released={Released}", job.Id, released);
+                    outcome = "released";
+                    break;
 
-            case CancelReason.LeaseLost:
-                log.LogWarning("Job {JobId} cancelled because its lease was lost", job.Id);
-                break;
+                case CancelReason.LeaseLost:
+                    log.LogWarning("Job {JobId} cancelled because its lease was lost", job.Id);
+                    outcome = "lease_lost";
+                    break;
 
-            default:
-                var delay = Backoff.Delay(job.Attempts, _o.RetryBase, _o.RetryCap, Random.Shared.NextDouble());
-                var recorded = await repo.FailAsync(job.Id, _workerId, error.ToString(), delay);
-                log.LogWarning("Job {JobId} ({Type}) failed on attempt {Attempt}/{Max}, recorded={Recorded}: {Message}",
-                    job.Id, job.Type, job.Attempts, job.MaxAttempts, recorded, error.Message);
-                break;
+                default:
+                    var delay = Backoff.Delay(job.Attempts, _o.RetryBase, _o.RetryCap, Random.Shared.NextDouble());
+                    var recorded = await repo.FailAsync(job.Id, _workerId, error.ToString(), delay);
+                    log.LogWarning("Job {JobId} ({Type}) failed on attempt {Attempt}/{Max}, recorded={Recorded}: {Message}",
+                        job.Id, job.Type, job.Attempts, job.MaxAttempts, recorded, error.Message);
+                    outcome = job.Attempts >= job.MaxAttempts ? "dead" : "retry";
+                    activity?.AddException(error);
+                    activity?.SetStatus(ActivityStatusCode.Error, error.Message);
+                    break;
+            }
         }
+
+        activity?.SetTag("scheduler.outcome", outcome);
+        Telemetry.Finished.Add(1, Tags(job, outcome));
+    }
+
+    private static TagList Tags(Job job, string? outcome = null)
+    {
+        var tags = new TagList { { "type", job.Type }, { "queue", job.Queue } };
+        if (outcome is not null) tags.Add("outcome", outcome);
+        return tags;
     }
 
     // ---------- heartbeat (shared by all queues) ----------

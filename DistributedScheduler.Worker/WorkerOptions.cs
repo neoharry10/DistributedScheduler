@@ -8,6 +8,8 @@ public class QueueOptions
 
 public class WorkerOptions
 {
+    public string? WorkerId { get; set; }   // null = "<machine>-<pid>"; the load test needs distinct ids in one process
+    
     // Single-queue shortcut. Only used when Queues is empty.
     public string Queue { get; set; } = "default";
     public int Concurrency { get; set; } = 8;

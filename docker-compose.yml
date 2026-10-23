@@ -1,4 +1,14 @@
 services:
+  dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:latest
+    container_name: scheduler-otel
+    restart: unless-stopped
+    environment:
+      DASHBOARD__FRONTEND__AUTHMODE: Unsecured
+      DASHBOARD__OTLP__AUTHMODE: Unsecured
+    ports:
+      - "18888:18888"   # web UI
+      - "4317:18889"    # OTLP gRPC
   postgres:
     image: postgres:16
     container_name: scheduler-db
